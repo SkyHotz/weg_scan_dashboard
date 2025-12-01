@@ -17,7 +17,7 @@ ALERT_LIMITS = {
     'VIBRAÇÃO RADIAL-Y (mm/s)': {'min': 0, 'max': 5},
     'VIBRAÇÃO RADIAL-X (mm/s)': {'min': 0, 'max': 7},
     'TEMPERATURA(°C)': {'min': 0, 'max': 70},
-    'CORRENTE ELÉTRICA (A)': {'min': 0, 'max': 100}
+    'CORRENTE ELÉTRICA (A)': {'min': 0, 'max': 1000}
 }
 
 def get_email_config():
