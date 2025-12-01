@@ -6,6 +6,15 @@ from datetime import datetime, timedelta
 import json
 import os
 from pathlib import Path
+import requests
+from io import StringIO
+from github_storage import (
+    load_data_from_github_csv, save_data_to_github_csv,
+    add_record_to_csv, load_change_log_from_csv, add_change_log_entry
+)
+from email_alerts import (
+    check_and_send_alerts, get_recent_alerts, is_alert_triggered, ALERT_LIMITS
+)
 
 # Configuração da página
 st.set_page_config(
@@ -20,6 +29,8 @@ if 'data' not in st.session_state:
     st.session_state.data = None
 if 'change_log' not in st.session_state:
     st.session_state.change_log = []
+# Dados são salvos automaticamente em CSV no repositório
+
 
 # Estilos personalizados
 st.markdown("""
@@ -59,7 +70,7 @@ ALERT_LIMITS = {
     'VIBRAÇÃO RADIAL-Y (mm/s)': {'min': 0, 'max': 5},
     'VIBRAÇÃO RADIAL-X (mm/s)': {'min': 0, 'max': 7},
     'TEMPERATURA(°C)': {'min': 0, 'max': 70},
-    'CORRENTE ELÉTRICA (A)': {'min': 0, 'max': 1000}
+    'CORRENTE ELÉTRICA (A)': {'min': 0, 'max': 100}
 }
 
 # Colunas de variáveis medidas
@@ -70,6 +81,78 @@ MEASURED_VARIABLES = [
     'TEMPERATURA(°C)',
     'CORRENTE ELÉTRICA (A)'
 ]
+
+
+# ============================================================================
+# FUNÇÕES DE PERSISTÊNCIA COM GITHUB GIST
+# ============================================================================
+
+@st.cache_resource
+def get_github_token():
+    """Obtém token do GitHub dos secrets"""
+    return st.secrets.get("GITHUB_TOKEN", None)
+
+def load_data_from_gist():
+    """Carrega dados do GitHub Gist"""
+    try:
+        token = get_github_token()
+        gist_id = st.secrets.get("GIST_ID", None)
+        
+        if not token or not gist_id:
+            return None
+        
+        headers = {"Authorization": f"token {token}"}
+        url = f"https://api.github.com/gists/{gist_id}"
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code == 200:
+            gist_data = response.json()
+            csv_content = gist_data['files']['dados_dashboard.csv']['content']
+            df = pd.read_csv(StringIO(csv_content))
+            
+            if 'DATA' in df.columns:
+                df['DATA'] = pd.to_datetime(df['DATA'], errors='coerce').dt.date
+            
+            return df
+    except Exception as e:
+        st.warning(f"Erro ao carregar de Gist: {e}")
+    
+    return None
+
+def save_data_to_gist(df):
+    """Salva dados no GitHub Gist"""
+    try:
+        token = get_github_token()
+        gist_id = st.secrets.get("GIST_ID", None)
+        
+        if not token or not gist_id:
+            st.warning("GitHub não configurado. Dados serão salvos apenas em memória.")
+            st.session_state.data = df.copy()
+            return
+        
+        csv_content = df.to_csv(index=False)
+        
+        headers = {"Authorization": f"token {token}"}
+        url = f"https://api.github.com/gists/{gist_id}"
+        
+        payload = {
+            "files": {
+                "dados_dashboard.csv": {
+                    "content": csv_content
+                }
+            }
+        }
+        
+        response = requests.patch(url, json=payload, headers=headers)
+        
+        if response.status_code == 200:
+            st.session_state.data = df.copy()
+        else:
+            st.warning(f"Erro ao salvar em Gist: {response.status_code}")
+            st.session_state.data = df.copy()
+    except Exception as e:
+        st.warning(f"Erro ao salvar em Gist: {e}")
+        st.session_state.data = df.copy()
 
 # ============================================================================
 # FUNÇÕES DE LOG DE ALTERAÇÕES
@@ -181,25 +264,18 @@ def save_data_to_json(df):
     except Exception as e:
         st.error(f"Erro ao salvar dados: {e}")
 
-# Função para carregar dados do JSON
+# Função para carregar dados (CSV no GitHub)
 def load_data_from_json():
-    """Carrega dados do arquivo JSON se existir"""
-    json_file = 'dados_dashboard.json'
-    if os.path.exists(json_file):
-        try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                data_dict = json.load(f)
-            
-            df = pd.DataFrame(data_dict)
-            if 'DateTime' in df.columns:
-                df['DateTime'] = pd.to_datetime(df['DateTime'], errors='coerce')
-            if 'DATA' in df.columns:
-                df['DATA'] = pd.to_datetime(df['DATA'], errors='coerce').dt.date
-            
-            return df
-        except Exception as e:
-            st.warning(f"Erro ao carregar dados salvos: {e}")
-            return None
+    """Carrega dados do arquivo CSV persistido no GitHub"""
+    if st.session_state.data is not None:
+        return st.session_state.data
+    
+    # Carregar do CSV no repositório
+    df = load_data_from_github_csv()
+    if df is not None:
+        st.session_state.data = df
+        return df
+    
     return None
 
 # Função para criar gráfico de tendência
@@ -530,6 +606,21 @@ with st.sidebar:
                     
                     # Salvar em JSON
                     save_data_to_json(st.session_state.data)
+                    
+                    # Verificar e enviar alertas por e-mail
+                    alertas = check_and_send_alerts(
+                        equipamento=new_equipment,
+                        data=new_date,
+                        horario=new_time,
+                        vibracao_axial=new_vibracao_axial,
+                        vibracao_radial_y=new_vibracao_radial_y,
+                        vibracao_radial_x=new_vibracao_radial_x,
+                        temperatura=new_temperatura,
+                        corrente_eletrica=new_corrente_eletrica
+                    )
+                    
+                    if alertas:
+                        st.warning(f"⚠️ Alertas enviados por e-mail: {', '.join(alertas)}")
                     
                     st.success("✅ Registro adicionado com sucesso!")
                     st.rerun()
