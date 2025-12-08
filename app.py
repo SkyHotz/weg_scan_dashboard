@@ -8,9 +8,9 @@ import os
 from pathlib import Path
 import requests
 from io import StringIO
-from github_storage import (
-    load_data_from_github_csv, save_data_to_github_csv,
-    add_record_to_csv, load_change_log_from_csv, add_change_log_entry
+from excel_storage import (
+    load_data_from_excel, save_data_to_excel,
+    add_record_to_excel, export_excel
 )
 from email_alerts import (
     check_and_send_alerts, get_recent_alerts, is_alert_triggered, ALERT_LIMITS
@@ -70,7 +70,7 @@ ALERT_LIMITS = {
     'VIBRAÇÃO RADIAL-Y (mm/s)': {'min': 0, 'max': 5},
     'VIBRAÇÃO RADIAL-X (mm/s)': {'min': 0, 'max': 7},
     'TEMPERATURA(°C)': {'min': 0, 'max': 70},
-    'CORRENTE ELÉTRICA (A)': {'min': 0, 'max': 1000}
+    'CORRENTE ELÉTRICA (A)': {'min': 0, 'max': 100}
 }
 
 # Colunas de variáveis medidas
@@ -264,14 +264,14 @@ def save_data_to_json(df):
     except Exception as e:
         st.error(f"Erro ao salvar dados: {e}")
 
-# Função para carregar dados (CSV no GitHub)
+# Função para carregar dados (Excel DADOSWEGSCAN.xlsx)
 def load_data_from_json():
-    """Carrega dados do arquivo CSV persistido no GitHub"""
+    """Carrega dados do arquivo Excel DADOSWEGSCAN.xlsx"""
     if st.session_state.data is not None:
         return st.session_state.data
     
-    # Carregar do CSV no repositório
-    df = load_data_from_github_csv()
+    # Carregar do Excel
+    df = load_data_from_excel()
     if df is not None:
         st.session_state.data = df
         return df
@@ -590,6 +590,27 @@ with st.sidebar:
                         'CORRENTE ELÉTRICA (A)': new_current
                     }
                     
+                    # Adicionar ao DataFrame
+                    new_df = pd.DataFrame([new_record])
+                    st.session_state.data = pd.concat([st.session_state.data, new_df], ignore_index=True)
+                    st.session_state.data = st.session_state.data.sort_values('DateTime').reset_index(drop=True)
+                    
+                    # Salvar no Excel
+                    success = add_record_to_excel(
+                        data=new_date,
+                        horario=new_time,
+                        equipamento=new_equipment,
+                        vibracao_axial=new_vibracao_axial,
+                        vibracao_radial_y=new_vibracao_radial_y,
+                        vibracao_radial_x=new_vibracao_radial_x,
+                        temperatura=new_temperatura,
+                        corrente_eletrica=new_corrente_eletrica
+                    )
+                    
+                    if not success:
+                        st.error("❌ Erro ao salvar no Excel!")
+                        st.stop()
+                    
                     # Registrar alterações no log
                     for var in MEASURED_VARIABLES:
                         add_change_log_entry(
@@ -598,14 +619,6 @@ with st.sidebar:
                             valor_anterior=None,
                             novo_valor=new_record[var]
                         )
-                    
-                    # Adicionar ao DataFrame
-                    new_df = pd.DataFrame([new_record])
-                    st.session_state.data = pd.concat([st.session_state.data, new_df], ignore_index=True)
-                    st.session_state.data = st.session_state.data.sort_values('DateTime').reset_index(drop=True)
-                    
-                    # Salvar em JSON
-                    save_data_to_json(st.session_state.data)
                     
                     # Verificar e enviar alertas por e-mail
                     alertas = check_and_send_alerts(
